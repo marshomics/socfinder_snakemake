@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# SOCfinder-Snakemake configuration
+# ---------------------------------------------------------------------------
+# All paths may be absolute, or relative to the directory you launch snakemake
+# from. The three "reference inputs" point at a normal SOCfinder checkout that
+# you have already set up (BLAST databases built, antiSMASH installed).
+
+samples: "config/samples.tsv"          # sample sheet: id, faa, fna, gff, kofam, [gram]
+outdir:  "results"                      # all outputs go here
+
+# --- reference inputs from your SOCfinder checkout -------------------------
+blast_db_dir:    "/path/to/SOCfinder/blast_databases"
+social_ko:       "/path/to/SOCfinder/inputs/SOCIAL_KO.csv"
+antismash_types: "/path/to/SOCfinder/inputs/antismash_types.csv"
+
+# --- tool settings ---------------------------------------------------------
+antismash_bin:  "antismash"
+antismash_mode: "default"   # "default" = identical calls to upstream SOCfinder.
+                            # "minimal" = faster, but may drop non-core cluster
+                            # genes; validate before trusting (see README).
+gram_default:   "both"      # used for any sample row whose 'gram' is blank
+                            # ("both" is safest if gram is unknown; "n"/"p" are
+                            # faster because the gram-specific DB is smaller)
+
+# --- KOFAMscan -------------------------------------------------------------
+# Default (false): use the precomputed table named in each sample's 'kofam'
+# column. Set true to run KOFAMscan here instead (the 'kofam' column then
+# becomes optional). Note: KOFAMscan is the heaviest step in SOCfinder, so
+# turning this on brings that cost back. Tables are written to
+# results/genomes/<id>/kofam.txt and reused on retries.
+run_kofamscan:         false
+kofam_profiles:        "/path/to/SOCfinder/KOFAM/profiles/prokaryote.hal"
+kofam_ko_list:         "/path/to/SOCfinder/KOFAM/ko_list"
+kofam_threshold_scale: 0.75   # matches SOCfinder; KOFAMscan's own default is 1.0
+kofam_cpus:            1       # CPUs per genome's KOFAMscan run
+
+# --- scaling knobs (tuned for the morty/abt3 cluster, full fair-share) ------
+batch_size:         500     # genomes per cluster job (300k / 500 = 600 jobs)
+cores_per_batch:    32      # genomes run at once per job; 32 = the largest batch
+                            # that still fits every node here (node529 has 32 cores
+                            # and no hyperthreading), so no node is excluded
+threads_per_genome: 1       # cores per genome; 1 maximises genome concurrency
+mem_per_core_mb:    4000    # only used in local (--cores) mode; SGE memory is set
+                            # per slot in profiles/sge/config.yaml (h_vmem)
+keep_intermediates: false   # false deletes antiSMASH dirs + BLAST output after
+                            # parsing (essential at 300k scale: keeping them can
+                            # mean multiple TB and hundreds of millions of files)
+
+# --- I/O placement ---------------------------------------------------------
+local_scratch: true         # run BLAST/antiSMASH working files and KOFAMscan's
+                            # temp dir on node-local $TMPDIR, writing only the
+                            # small result CSVs back to outdir. Keeps the shared
+                            # filesystem off the critical path when thousands of
+                            # genomes run at once. The node needs scratch room for
+                            # ~cores_per_batch concurrent antiSMASH runs.
+scratch_base: ""            # override scratch base dir (default: $TMPDIR, else
+                            # /tmp). Usually leave blank to use the scheduler's.

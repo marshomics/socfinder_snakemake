@@ -1,0 +1,162 @@
+# =============================================================================
+# SOCfinder — Snakemake workflow for very large genome sets (100k–1M+ assemblies)
+# =============================================================================
+# Design notes
+# ------------
+# At 300k genomes a naive "one job per genome per rule" workflow would build a
+# multi-million-node DAG and flood the scheduler queue. Instead this workflow
+# processes genomes in BATCHES: each batch is one cluster job that runs ~hundreds
+# of genomes concurrently (one core each) via run_batch.py. That keeps the DAG to
+# a few hundred/thousand nodes while still saturating the cluster.
+#
+# Resume is two-layered:
+#   * batch level   — Snakemake reruns only batches whose .done sentinel is absent;
+#   * genome level  — run_one_genome.py skips any genome that already has SOCKS.csv,
+#                     so a re-run of a partial batch only redoes what is missing.
+#
+# KOFAMscan is NOT run here: its precomputed table per genome is an input column.
+# =============================================================================
+
+import os
+import math
+import pandas as pd
+
+configfile: "config/config.yaml"
+
+SCRIPTS = os.path.join(workflow.basedir, "scripts")
+
+OUTDIR             = config["outdir"]
+BATCHDIR           = os.path.join(OUTDIR, ".batches")
+GENOMEDIR          = os.path.join(OUTDIR, "genomes")
+SAMPLES_TSV        = config["samples"]
+BATCH_SIZE         = int(config["batch_size"])
+CORES_PER_BATCH    = int(config["cores_per_batch"])
+THREADS_PER_GENOME = int(config["threads_per_genome"])
+JOBS_PER_BATCH     = max(1, CORES_PER_BATCH // THREADS_PER_GENOME)
+MEM_PER_CORE_MB    = int(config.get("mem_per_core_mb", 3000))
+RUN_KOFAMSCAN      = bool(config.get("run_kofamscan", False))
+
+# When running KOFAMscan in-pipeline, assemble its flags once. In the default
+# (precomputed) mode this is an empty string and no KOFAM flags are passed.
+if RUN_KOFAMSCAN:
+    KOFAM_ARGS = (
+        "--run-kofamscan"
+        f" --kofam-bin {config.get('kofam_bin', 'exec_annotation')}"
+        f" --kofam-profiles {config['kofam_profiles']}"
+        f" --kofam-ko-list {config['kofam_ko_list']}"
+        f" --kofam-threshold-scale {config.get('kofam_threshold_scale', '0.75')}"
+        f" --kofam-cpus {config.get('kofam_cpus', 1)}"
+    )
+else:
+    KOFAM_ARGS = ""
+
+# Node-local scratch for heavy intermediates (default on; uses $TMPDIR per job).
+LOCAL_SCRATCH = bool(config.get("local_scratch", True))
+SCRATCH_BASE = config.get("scratch_base", "")
+SCRATCH_ARGS = "" if LOCAL_SCRATCH else "--no-local-scratch"
+if SCRATCH_BASE:
+    SCRATCH_ARGS = (SCRATCH_ARGS + f" --scratch-base {SCRATCH_BASE}").strip()
+
+# --- Load the sample sheet and slice it into batches -------------------------
+samples = pd.read_csv(SAMPLES_TSV, sep="\t", dtype=str).fillna("")
+_required = {"id", "faa", "fna", "gff"}
+if not RUN_KOFAMSCAN:
+    _required.add("kofam")   # precomputed tables are mandatory unless we run them
+_missing = _required - set(samples.columns)
+if _missing:
+    raise WorkflowError(f"{SAMPLES_TSV} is missing column(s): {sorted(_missing)}")
+if samples["id"].duplicated().any():
+    dups = samples.loc[samples["id"].duplicated(), "id"].tolist()
+    raise WorkflowError(f"Duplicate genome ids in sample sheet: {dups[:5]} ...")
+if "gram" not in samples.columns:
+    samples["gram"] = ""
+if "kofam" not in samples.columns:
+    samples["kofam"] = ""
+
+N = len(samples)
+N_BATCHES = max(1, math.ceil(N / BATCH_SIZE))
+BATCH_IDS = list(range(N_BATCHES))
+
+# Materialise one small TSV per batch (idempotent; cheap even for thousands).
+os.makedirs(BATCHDIR, exist_ok=True)
+_cols = ["id", "faa", "fna", "gff", "kofam", "gram"]
+for i in BATCH_IDS:
+    sub = samples.iloc[i * BATCH_SIZE:(i + 1) * BATCH_SIZE][_cols]
+    sub.to_csv(os.path.join(BATCHDIR, f"batch_{i}.tsv"), sep="\t", index=False)
+
+localrules: all
+
+
+rule all:
+    input:
+        os.path.join(OUTDIR, "master_SOCKS.tsv"),
+        os.path.join(OUTDIR, "master_summary.tsv"),
+
+
+rule run_batch:
+    """Process one batch of genomes inside a single cluster job."""
+    input:
+        tsv = os.path.join(BATCHDIR, "batch_{b}.tsv"),
+    output:
+        sentinel = os.path.join(BATCHDIR, "batch_{b}.done"),
+    threads: CORES_PER_BATCH
+    resources:
+        mem_mb = CORES_PER_BATCH * MEM_PER_CORE_MB,
+    params:
+        jobs            = JOBS_PER_BATCH,
+        tpg             = THREADS_PER_GENOME,
+        genomedir       = GENOMEDIR,
+        blast_db_dir    = config["blast_db_dir"],
+        social_ko       = config["social_ko"],
+        antismash_types = config["antismash_types"],
+        antismash_bin   = config.get("antismash_bin", "antismash"),
+        antismash_mode  = config.get("antismash_mode", "default"),
+        kofam_args      = KOFAM_ARGS,
+        scratch_args    = SCRATCH_ARGS,
+        gram_default    = config.get("gram_default", "both"),
+        keep            = "--keep-intermediates" if config.get("keep_intermediates", False) else "",
+        scripts         = SCRIPTS,
+    shell:
+        r"""
+        python {params.scripts}/run_batch.py \
+            --batch-tsv {input.tsv} \
+            --sentinel {output.sentinel} \
+            --jobs {params.jobs} \
+            --threads-per-genome {params.tpg} \
+            --outdir-root {params.genomedir} \
+            --blast-db-dir {params.blast_db_dir} \
+            --social-ko {params.social_ko} \
+            --antismash-types {params.antismash_types} \
+            --antismash-bin {params.antismash_bin} \
+            --antismash-mode {params.antismash_mode} \
+            {params.kofam_args} \
+            {params.scratch_args} \
+            --gram-default {params.gram_default} \
+            {params.keep}
+        """
+
+
+rule aggregate:
+    """Collect every genome's SOCKS.csv into master tables."""
+    input:
+        expand(os.path.join(BATCHDIR, "batch_{b}.done"), b=BATCH_IDS),
+    output:
+        socks   = os.path.join(OUTDIR, "master_SOCKS.tsv"),
+        summary = os.path.join(OUTDIR, "master_summary.tsv"),
+        missing = os.path.join(OUTDIR, "missing.txt"),
+    threads: 1
+    resources:
+        mem_mb = 4000,
+    params:
+        genomedir = GENOMEDIR,
+        samples   = SAMPLES_TSV,
+        scripts   = SCRIPTS,
+    shell:
+        r"""
+        python {params.scripts}/aggregate.py \
+            --outdir-root {params.genomedir} \
+            --samples {params.samples} \
+            --out-socks {output.socks} \
+            --out-summary {output.summary} \
+            --out-missing {output.missing}
+        """

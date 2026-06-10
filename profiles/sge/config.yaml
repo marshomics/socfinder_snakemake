@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Snakemake >= 8 profile for SGE / Univa / Son-of-Grid-Engine clusters.
+# Run with:   snakemake --profile profiles/sge
+# Requires:   pip install snakemake-executor-plugin-cluster-generic
+# First time: mkdir -p logs/sge
+# ---------------------------------------------------------------------------
+executor: cluster-generic
+
+# h_vmem on SGE is charged PER SLOT, so request per-genome memory here, not the
+# job total. 4G x 32 slots = 128 GB per batch, which fits every node. Raise to
+# 6G if antiSMASH ever OOMs. (If your site instead treats h_vmem as a per-job
+# total, change this to the whole-job figure, e.g. h_vmem=128G.)
+cluster-generic-submit-cmd: >-
+  qsub -cwd -V
+  -N socf.{rule}
+  -pe smp {threads}
+  -l h_vmem=4G
+  -o logs/sge/ -e logs/sge/
+
+jobs: 64                  # concurrent batch jobs. 64 x 32 slots = 2048 slots,
+                          # ~70% of the cluster's ~2976 slots. Raise toward 90 to
+                          # take essentially all of it; drop to ~30 to share.
+default-resources:
+  - mem_mb=4000
+latency-wait: 60          # shared filesystems are slow to show new files
+rerun-incomplete: True
+restart-times: 2          # auto-retry a failed batch twice
+keep-going: True          # don't stop the whole run because one batch failed
+printshellcmds: True
+
+# ---------------------------------------------------------------------------
+# PBS / Torque variant — replace the submit command above with:
+#
+# cluster-generic-submit-cmd: >-
+#   qsub -V
+#   -N socf.{rule}
+#   -l nodes=1:ppn={threads}
+#   -l mem={resources.mem_mb}mb
+#   -o logs/sge/ -e logs/sge/
+#
+# LSF variant:
+#   bsub -n {threads} -M {resources.mem_mb} -o logs/sge/%J.out -e logs/sge/%J.err
+#
+# Slurm: drop this plugin and use `--executor slurm` (built into Snakemake 8).
+# ---------------------------------------------------------------------------

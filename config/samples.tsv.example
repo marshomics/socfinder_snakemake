@@ -1,0 +1,3 @@
+id	faa	fna	gff	kofam	gram
+B_aphidicola	/path/to/SOCfinder/test/B_aphidicola.faa	/path/to/SOCfinder/test/B_aphidicola.fna	/path/to/SOCfinder/test/B_aphidicola.gff	/path/to/kofam/B_aphidicola.txt	n
+P_salmonis	/path/to/SOCfinder/test2/P_salmonis.faa	/path/to/SOCfinder/test2/P_salmonis.fna	/path/to/SOCfinder/test2/P_salmonis.gff	/path/to/kofam/P_salmonis.txt	n
