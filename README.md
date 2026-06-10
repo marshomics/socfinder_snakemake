@@ -6,64 +6,6 @@ same social-gene calls as upstream SOCfinder but processes genomes the way the p
 actually wants to be processed: many at once, one core each, with checkpoint/resume so a
 failure at genome 150,000 doesn't restart the run.
 
-## Why the original is slow at 300k genomes
-
-`SOC_mine.py` runs three heavy tools per genome (KOFAMscan, three BLASTp searches,
-antiSMASH) and hardcodes 32 threads for each. Run one genome at a time and you get two
-problems at once. The tools oversubscribe the node (KOFAMscan + three BLASTp jobs each
-ask for 32 threads *while* antiSMASH runs and grabs every core by default), and genomes
-are processed serially, so total wall time is roughly `300,000 × (one genome's time)`.
-Neither BLAST against a 90 MB database nor antiSMASH gets 32× faster on 32 threads, so
-those threads are mostly wasted contention.
-
-Three smaller things also cost time and, more importantly, robustness:
-
-- `SOC_mine.py` builds a gffutils SQLite database for every genome (`gffutils.create_db`)
-  and then never uses it — it re-parses the GFF by hand right afterwards. That's a wasted
-  disk write per genome, and on a shared filesystem with 300k genomes those writes hurt.
-- The GFF cleanup uses two `DataFrame.iterrows()` passes plus a per-group loop. Fine once,
-  slow 300k times.
-- `SOC_parse.py` parses antiSMASH GenBank files with `exec()` to build `vec0, vec1, …`
-  variables it reads back out of `locals()`. It's O(n²) and breaks on large genomes.
-
-## What this pipeline changes
-
-The work across genomes is embarrassingly parallel, so that's where the speed comes from.
-
-Each genome runs single-threaded by default, and the cluster runs as many genomes
-concurrently as you have cores. On a few hundred 16-core nodes that's thousands of genomes
-in flight at once, versus one at a time. This alone is the dominant win.
-
-KOFAMscan — the slowest step in the original — isn't run here at all. You've already
-computed it, so its table is just an input column and gets parsed directly.
-
-antiSMASH stays in its default configuration so the calls match upstream exactly. A faster
-`minimal` mode is available and described below, with its caveat.
-
-The GFF fix is vectorised and drops the unused SQLite build. The antiSMASH GenBank parser
-is rewritten with Biopython instead of `exec()`. Both produce identical gene sets to the
-original (there's a test that proves the GFF rewrite keeps exactly the same features), just
-faster and without the failure modes.
-
-Snakemake adds the part that matters most at this scale: resume. Batches that finished stay
-finished, and within a re-run batch only the genomes still missing a `SOCKS.csv` get redone.
-
-## How it scales: batching
-
-A naive "one Snakemake job per genome" workflow would build a multi-million-node DAG and
-flood the SGE queue with 300k jobs. Neither Snakemake nor SGE enjoys that. Instead, genomes
-are processed in **batches**. One batch is one cluster job that runs `batch_size` genomes,
-`cores_per_batch` at a time, inside a thread pool. With `batch_size: 200` that's 1,500
-cluster jobs for 300k genomes instead of 300,000 — small enough for both the scheduler and
-the DAG, while every core stays busy.
-
-```
-samples.tsv ──► [batch 0] ─┐
-                [batch 1] ─┤  each batch job runs run_one_genome.py per genome
-                  ...      ├─►  results/genomes/<id>/SOCKS.csv ──► aggregate ──► master_SOCKS.tsv
-                [batch N] ─┘
-```
-
 ## Requirements
 
 You need a working SOCfinder checkout — this pipeline drives the same tools, it doesn't
