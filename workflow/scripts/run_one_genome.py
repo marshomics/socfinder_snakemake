@@ -69,6 +69,9 @@ def main():
     ap.add_argument("--kofam-threshold-scale", default="0.75",
                     help="KOFAMscan --threshold-scale (SOCfinder uses 0.75; tool default is 1.0)")
     ap.add_argument("--kofam-cpus", type=int, default=1)
+    ap.add_argument("--kofam-recompute-scale", default="",
+                    help="recompute significance from a precomputed scale-1.0 table at this "
+                         "scale (e.g. 0.75) instead of trusting its '*' column")
     ap.add_argument("--gram", default="both", choices=["p", "n", "both"])
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--blast-db-dir", required=True)
@@ -167,8 +170,16 @@ def main():
             if not kofam_path:
                 raise ValueError("no --kofam table given and --run-kofamscan not set")
 
+        # Recompute significance only for a precomputed (scale-1.0) table; a table
+        # we just generated is already at the requested scale.
+        if args.run_kofamscan or not args.kofam_recompute_scale:
+            kofam_recompute = None
+        else:
+            kofam_recompute = float(args.kofam_recompute_scale)
+
         # --- Parse each module + combine (small CSVs -> shared outdir) ------
-        lib.parse_kofam(kofam_path, args.social_ko, os.path.join(out, "K_SOCK.csv"))
+        lib.parse_kofam(kofam_path, args.social_ko, os.path.join(out, "K_SOCK.csv"),
+                        threshold_scale=kofam_recompute)
         lib.parse_blast(blast_dir, os.path.join(out, "B_SOCK.csv"))
         lib.parse_antismash(adir, args.antismash_types, os.path.join(out, "A_SOCK_filtered.csv"))
         summary = lib.combine(out, genome_id=args.id)

@@ -60,6 +60,8 @@ def process(row, args):
                 "--kofam-cpus", str(args.kofam_cpus)]
     elif kofam:
         cmd += ["--kofam", kofam]
+    if args.kofam_recompute_scale:
+        cmd += ["--kofam-recompute-scale", args.kofam_recompute_scale]
     if args.no_local_scratch:
         cmd.append("--no-local-scratch")
     if args.scratch_base:
@@ -91,6 +93,7 @@ def main():
     ap.add_argument("--kofam-ko-list", default="")
     ap.add_argument("--kofam-threshold-scale", default="0.75")
     ap.add_argument("--kofam-cpus", type=int, default=1)
+    ap.add_argument("--kofam-recompute-scale", default="")
     ap.add_argument("--scratch-base", default="")
     ap.add_argument("--no-local-scratch", action="store_true")
     ap.add_argument("--gram-default", default="both", choices=["p", "n", "both"])
