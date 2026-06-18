@@ -34,6 +34,13 @@ kofam_ko_list:         "/path/to/SOCfinder/KOFAM/ko_list"
 kofam_threshold_scale: 0.75   # matches SOCfinder; KOFAMscan's own default is 1.0
 kofam_cpus:            1       # CPUs per genome's KOFAMscan run
 
+# If your PRECOMPUTED tables were made at KOFAMscan's default scale (1.0) but you
+# want SOCfinder's 0.75 behaviour without re-running, set this to 0.75. The parser
+# then recomputes significance as (score >= 0.75 * threshold), unioned with any
+# existing '*', instead of trusting the table's '*'. Leave blank to trust '*'.
+# Only applies when run_kofamscan is false, and assumes the table is at scale 1.0.
+kofam_recompute_scale: ""
+
 # --- scaling knobs (tuned for the morty/abt3 cluster, full fair-share) ------
 batch_size:         500     # genomes per cluster job (300k / 500 = 600 jobs)
 cores_per_batch:    32      # genomes run at once per job; 32 = the largest batch
