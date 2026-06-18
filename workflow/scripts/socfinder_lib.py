@@ -118,13 +118,27 @@ def fix_gff(in_gff: str, out_gff: str) -> int:
 # ---------------------------------------------------------------------------
 # 2. KOFAM module  (replaces the KOFAM block in SOC_parse.py)
 # ---------------------------------------------------------------------------
-def parse_kofam(kofam_path: str, social_ko_path: str, out_csv: str) -> int:
+def parse_kofam(kofam_path: str, social_ko_path: str, out_csv: str,
+                threshold_scale=None) -> int:
     """Write K_SOCK.csv (unique social gene names) and return its row count.
 
     KOFAMscan must have been run with ``-f detail-tsv``. Significant hits are the
     rows whose first column is '*' (KOFAMscan marks these when score >= threshold).
-    To match SOCfinder exactly the table should have been produced with
-    ``--threshold-scale 0.75`` (see the test/ command in the upstream repo).
+    To match SOCfinder the table should have been produced with
+    ``--threshold-scale 0.75``.
+
+    ``threshold_scale``:
+      * None (default) -- trust KOFAMscan's own '*' marks as written.
+      * a number (e.g. 0.75) -- recompute significance at that scale, for the case
+        where the table was produced at scale 1.0 (KOFAMscan's default) but you
+        want SOCfinder's 0.75 behaviour without re-running KOFAMscan. Because
+        ``--threshold-scale`` is applied after the search, a scale-1.0 detail table
+        can be re-thresholded exactly: a hit is significant iff
+        ``score >= threshold_scale * thrshld``. We take the UNION of that with the
+        rows already starred, so no originally-significant hit can be lost if the
+        reported ``score`` is not the exact value KOFAMscan compared for some KO.
+        This assumes the input table is at scale 1.0; do not apply it to a table
+        already produced at 0.75 (that would scale twice).
     """
     sock = pd.read_csv(social_ko_path)
     cols = ["#", "gene name", "KO", "thrshld", "score", "E-value", "KO definition"]
@@ -137,7 +151,16 @@ def parse_kofam(kofam_path: str, social_ko_path: str, out_csv: str) -> int:
         kofam_path, sep="\t", quoting=3, header=None, names=cols,
         dtype=str, engine="python",
     )
-    data = data[data["#"] == "*"]
+
+    if threshold_scale is None:
+        sig = data["#"] == "*"
+    else:
+        thr = pd.to_numeric(data["thrshld"], errors="coerce")
+        score = pd.to_numeric(data["score"], errors="coerce")
+        recomputed = (score >= float(threshold_scale) * thr).fillna(False)
+        sig = (data["#"] == "*") | recomputed
+    data = data[sig]
+
     data = data[data["KO"].isin(sock["term"])]
     socks = pd.unique(data["gene name"])
     pd.DataFrame(socks, columns=["0"]).to_csv(out_csv, index=False)
