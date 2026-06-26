@@ -2,9 +2,7 @@
 
 A Snakemake re-implementation of [SOCfinder](https://github.com/lauriebelch/SOCfinder)
 built to run hundreds of thousands of genomes on an SGE/PBS cluster. It produces the
-same social-gene calls as upstream SOCfinder but processes genomes the way the problem
-actually wants to be processed: many at once, one core each, with checkpoint/resume so a
-failure at genome 150,000 doesn't restart the run.
+same social-gene calls as upstream SOCfinder but processes many genomes at once, one core each, with checkpoint/resume.
 
 ## Why the original is slow at 300k genomes
 
